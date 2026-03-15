@@ -1,25 +1,18 @@
 """Unbrowse AI client for agent web interactions.
 
 Enables AI agents to interact with websites by resolving natural-language intents
-into structured API calls, bypassing traditional browser automation.
+into structured API calls via the Unbrowse skill marketplace.
 
-API docs: https://www.unbrowse.ai/llms.txt
+Beta API base: https://beta-api.unbrowse.ai
+Docs: https://www.unbrowse.ai/llms.txt
 """
 
-from enum import Enum
 from typing import Any, Optional
 
 import httpx
 from pydantic import BaseModel
 
 from backend.config import settings
-
-
-class ActionType(str, Enum):
-    WEB_SEARCH = "web_search"
-    DATA_RETRIEVE = "data_retrieve"
-    FORM_SUBMIT = "form_submit"
-    INTENT_RESOLVE = "intent_resolve"
 
 
 class UnbrowseResult(BaseModel):
@@ -32,18 +25,14 @@ class UnbrowseResult(BaseModel):
     execution_time_ms: Optional[int] = None
 
 
-class SkillInfo(BaseModel):
-    """Metadata about an Unbrowse skill."""
-
-    name: str
-    domain: str
-    description: str
-    endpoint_count: int
-    score: float
-
-
 class UnbrowseClient:
-    """HTTP client for the Unbrowse AI API."""
+    """HTTP client for the Unbrowse AI beta API.
+
+    The beta API exposes skill marketplace search, listing, agent management,
+    and platform stats. Skill execution requires the local Unbrowse CLI.
+    For the SovereignID demo, we use semantic search + skill listing to find
+    relevant API skills for any given natural-language intent.
+    """
 
     def __init__(
         self,
@@ -60,36 +49,115 @@ class UnbrowseClient:
         return headers
 
     async def resolve_intent(self, intent: str, url: Optional[str] = None) -> UnbrowseResult:
-        """Resolve a natural-language intent into a structured API response.
+        """Resolve a natural-language intent by searching the Unbrowse skill marketplace.
 
-        This is the primary endpoint for agent web interactions.
-        POST /v1/intent/resolve
+        Uses POST /v1/search to find semantically matching skills, then enriches
+        the results with full skill metadata from GET /v1/skills. Returns the
+        matched skills, their domains, endpoints, and similarity scores.
         """
-        payload: dict[str, Any] = {"intent": intent}
-        if url:
-            payload["url"] = url
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                response = await client.post(
-                    f"{self.api_url}/v1/intent/resolve",
-                    json=payload,
+                # Step 1: Semantic search for matching skills
+                search_payload: dict[str, Any] = {"intent": intent, "k": 5}
+                search_resp = await client.post(
+                    f"{self.api_url}/v1/search",
+                    json=search_payload,
                     headers=self._headers(),
                 )
-                response.raise_for_status()
-                data = response.json()
+                search_resp.raise_for_status()
+                search_data = search_resp.json()
+                search_results = search_data.get("results", [])
+
+                # Step 2: If a domain URL is provided, also do a domain-scoped search
+                domain_results = []
+                if url:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc or url
+                    domain_resp = await client.post(
+                        f"{self.api_url}/v1/search/domain",
+                        json={"intent": intent, "domain": domain, "k": 5},
+                        headers=self._headers(),
+                    )
+                    if domain_resp.status_code == 200:
+                        domain_results = domain_resp.json().get("results", [])
+
+                # Step 3: Fetch full skill catalog for enrichment
+                skills_resp = await client.get(
+                    f"{self.api_url}/v1/skills",
+                    headers=self._headers(),
+                )
+                skills_resp.raise_for_status()
+                all_skills = {
+                    s["skill_id"]: s
+                    for s in skills_resp.json().get("skills", [])
+                }
+
+                # Step 4: Get platform stats
+                stats_resp = await client.get(
+                    f"{self.api_url}/v1/stats/summary",
+                    headers=self._headers(),
+                )
+                platform_stats = stats_resp.json() if stats_resp.status_code == 200 else {}
+
+                # Step 5: Get agent identity
+                agent_resp = await client.get(
+                    f"{self.api_url}/v1/agents/me",
+                    headers=self._headers(),
+                )
+                agent_info = agent_resp.json() if agent_resp.status_code == 200 else {}
+
+                # Build enriched result
+                matched_skills = []
+                for result in search_results:
+                    skill_id = result.get("id", "")
+                    score = result.get("score", 0.0)
+                    skill_meta = all_skills.get(skill_id, {})
+                    matched_skills.append({
+                        "skill_id": skill_id,
+                        "similarity_score": round(score, 4),
+                        "name": skill_meta.get("name", "unknown"),
+                        "domain": skill_meta.get("domain", "unknown"),
+                        "description": skill_meta.get("description", ""),
+                        "lifecycle": skill_meta.get("lifecycle", "unknown"),
+                        "endpoints": [
+                            {
+                                "method": ep.get("method"),
+                                "url": ep.get("url_template"),
+                                "verification": ep.get("verification_status"),
+                                "reliability": ep.get("reliability_score"),
+                            }
+                            for ep in skill_meta.get("endpoints", [])
+                        ],
+                    })
+
                 return UnbrowseResult(
                     success=True,
-                    data=data,
-                    skill_used=data.get("skill"),
-                    execution_time_ms=data.get("execution_time_ms"),
+                    data={
+                        "intent": intent,
+                        "url": url,
+                        "matched_skills": matched_skills,
+                        "domain_results": domain_results,
+                        "total_marketplace_skills": platform_stats.get("skills", 0),
+                        "total_marketplace_endpoints": platform_stats.get("endpoints", 0),
+                        "total_executions": platform_stats.get("executions", 0),
+                        "agent_id": agent_info.get("agent_id"),
+                        "agent_name": agent_info.get("name"),
+                    },
+                    skill_used=matched_skills[0]["name"] if matched_skills else None,
                 )
-            except httpx.HTTPStatusError as e:
-                return UnbrowseResult(success=False, error=f"HTTP {e.response.status_code}: {e.response.text}")
-            except httpx.RequestError as e:
-                return UnbrowseResult(success=False, error=f"Connection error: {str(e)}")
 
-    async def search_skills(self, query: str) -> list[SkillInfo]:
+            except httpx.HTTPStatusError as e:
+                return UnbrowseResult(
+                    success=False,
+                    error=f"HTTP {e.response.status_code}: {e.response.text}",
+                )
+            except httpx.RequestError as e:
+                return UnbrowseResult(
+                    success=False,
+                    error=f"Connection error: {str(e)}",
+                )
+
+    async def search_skills(self, query: str) -> list[dict[str, Any]]:
         """Search the Unbrowse skill marketplace by intent.
 
         POST /v1/search
@@ -98,25 +166,15 @@ class UnbrowseClient:
             try:
                 response = await client.post(
                     f"{self.api_url}/v1/search",
-                    json={"query": query},
+                    json={"intent": query, "k": 10},
                     headers=self._headers(),
                 )
                 response.raise_for_status()
-                data = response.json()
-                return [
-                    SkillInfo(
-                        name=s.get("name", ""),
-                        domain=s.get("domain", ""),
-                        description=s.get("description", ""),
-                        endpoint_count=s.get("endpoint_count", 0),
-                        score=s.get("score", 0.0),
-                    )
-                    for s in data.get("skills", [])
-                ]
-            except (httpx.HTTPError, KeyError):
+                return response.json().get("results", [])
+            except httpx.HTTPError:
                 return []
 
-    async def search_domain(self, intent: str, domain: str) -> list[SkillInfo]:
+    async def search_domain(self, intent: str, domain: str) -> list[dict[str, Any]]:
         """Search skills narrowed to a specific domain.
 
         POST /v1/search/domain
@@ -125,45 +183,16 @@ class UnbrowseClient:
             try:
                 response = await client.post(
                     f"{self.api_url}/v1/search/domain",
-                    json={"intent": intent, "domain": domain},
+                    json={"intent": intent, "domain": domain, "k": 10},
                     headers=self._headers(),
                 )
                 response.raise_for_status()
-                data = response.json()
-                return [
-                    SkillInfo(
-                        name=s.get("name", ""),
-                        domain=s.get("domain", ""),
-                        description=s.get("description", ""),
-                        endpoint_count=s.get("endpoint_count", 0),
-                        score=s.get("score", 0.0),
-                    )
-                    for s in data.get("skills", [])
-                ]
-            except (httpx.HTTPError, KeyError):
+                return response.json().get("results", [])
+            except httpx.HTTPError:
                 return []
 
-    async def register_agent(self, agent_name: str, agent_description: str) -> Optional[str]:
-        """Register an agent with Unbrowse and obtain an API key.
-
-        POST /v1/agents/register
-        Returns the API key string on success, None on failure.
-        """
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(
-                    f"{self.api_url}/v1/agents/register",
-                    json={"name": agent_name, "description": agent_description},
-                    headers=self._headers(),
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data.get("api_key")
-            except httpx.HTTPError:
-                return None
-
     async def get_platform_stats(self) -> Optional[dict[str, Any]]:
-        """Get platform-wide statistics.
+        """Get Unbrowse platform-wide statistics.
 
         GET /v1/stats/summary
         """
@@ -171,6 +200,22 @@ class UnbrowseClient:
             try:
                 response = await client.get(
                     f"{self.api_url}/v1/stats/summary",
+                    headers=self._headers(),
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError:
+                return None
+
+    async def get_agent_profile(self) -> Optional[dict[str, Any]]:
+        """Get the authenticated agent's profile.
+
+        GET /v1/agents/me
+        """
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                response = await client.get(
+                    f"{self.api_url}/v1/agents/me",
                     headers=self._headers(),
                 )
                 response.raise_for_status()

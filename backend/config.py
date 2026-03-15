@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 1440
 
-    model_config = {"env_file": ".env", "env_prefix": "SOVEREIGNID_"}
+    model_config = {"env_file": ".env", "env_prefix": "SOVEREIGNID_", "extra": "ignore"}
 
 
 settings = Settings()

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.schemas import SubnetRegistrationResponse, SubnetStatusResponse
+from backend.api.schemas import RegisterSubnetRequest, SubnetRegistrationResponse, SubnetStatusResponse
 from backend.config import settings
 from backend.db import get_session
 from backend.db.models import Agent, HumanIdentity, SubnetRegistration
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/subnet", tags=["subnet"])
 
 @router.post("/register", response_model=SubnetRegistrationResponse)
 async def register_on_subnet(
-    agent_id: str,
+    req: RegisterSubnetRequest,
     session: AsyncSession = Depends(get_session),
 ):
     """Register an agent's identity on the Bittensor subnet.
@@ -25,6 +25,7 @@ async def register_on_subnet(
     deterministic identity hash, creates a subnet registration record,
     marks the agent as registered, and awards a reputation verification bonus.
     """
+    agent_id = req.agent_id
     # Validate agent exists
     agent = await session.get(Agent, agent_id)
     if not agent:
