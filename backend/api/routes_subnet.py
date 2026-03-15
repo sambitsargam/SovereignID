@@ -104,10 +104,16 @@ async def get_subnet_status():
     try:
         import bittensor as bt
 
-        subtensor = bt.subtensor(network=settings.subtensor_endpoint)
+        subtensor = bt.Subtensor(network=settings.subtensor_endpoint)
         block_height = subtensor.get_current_block()
-        metagraph = subtensor.metagraph(netuid=settings.bittensor_netuid)
-        num_neurons = metagraph.n.item()
+
+        # metagraph requires the subnet to exist on-chain; handle gracefully
+        num_neurons = None
+        try:
+            metagraph = subtensor.metagraph(netuid=settings.bittensor_netuid)
+            num_neurons = metagraph.n.item()
+        except Exception:
+            pass
 
         return SubnetStatusResponse(
             connected=True,

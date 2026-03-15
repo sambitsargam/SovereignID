@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   Network,
@@ -9,21 +9,15 @@ import {
   Server,
   Box,
   Users,
-  Loader2,
   RefreshCw,
   Shield,
   Fingerprint,
   CheckCircle2,
   Award,
+  Radio,
 } from "lucide-react";
 import { api, type SubnetStatus } from "@/lib/api";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -72,33 +66,36 @@ const subnetFeatures = [
 
 export default function SubnetPage() {
   const [status, setStatus] = useState<SubnetStatus | null>(null);
+  const [registeredAgents, setRegisteredAgents] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchStatus() {
+  const fetchAll = useCallback(async () => {
     try {
-      const data = await api.getSubnetStatus();
-      setStatus(data);
+      const [subnetData, stats] = await Promise.all([
+        api.getSubnetStatus(),
+        api.getStats(),
+      ]);
+      setStatus(subnetData);
+      setRegisteredAgents(stats.registered_agents);
       setError(null);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load subnet status"
-      );
+      setError(err instanceof Error ? err.message : "Failed to load subnet status");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }
-
-  useEffect(() => {
-    fetchStatus();
   }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   function handleRefresh() {
     setRefreshing(true);
-    fetchStatus();
+    fetchAll();
   }
+
+  const isLive = status?.connected ?? false;
 
   return (
     <motion.div
@@ -107,6 +104,7 @@ export default function SubnetPage() {
       transition={{ duration: 0.4 }}
       className="space-y-8"
     >
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold gradient-text">Subnet Status</h1>
@@ -118,11 +116,9 @@ export default function SubnetPage() {
           variant="outline"
           size="sm"
           onClick={handleRefresh}
-          disabled={refreshing}
+          disabled={refreshing || loading}
         >
-          <RefreshCw
-            className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
-          />
+          <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </Button>
       </div>
@@ -139,9 +135,7 @@ export default function SubnetPage() {
             <div className="flex items-center gap-3">
               <WifiOff className="h-6 w-6 text-destructive" />
               <div>
-                <p className="font-medium text-destructive">
-                  Connection Error
-                </p>
+                <p className="font-medium text-destructive">Connection Error</p>
                 <p className="text-sm text-muted-foreground">{error}</p>
               </div>
             </div>
@@ -149,140 +143,118 @@ export default function SubnetPage() {
         </Card>
       ) : status ? (
         <>
-          <Card className={status.connected ? "glow" : ""}>
+          {/* Connection banner */}
+          <Card className={isLive ? "border-green-500/30 glow" : "border-border"}>
             <CardContent className="p-6">
               <div className="flex items-center gap-4">
-                <div
-                  className={`flex h-14 w-14 items-center justify-center rounded-xl ${
-                    status.connected
-                      ? "bg-success/10"
-                      : "bg-destructive/10"
-                  }`}
-                >
-                  {status.connected ? (
-                    <Wifi className="h-7 w-7 text-success" />
-                  ) : (
-                    <WifiOff className="h-7 w-7 text-destructive" />
-                  )}
+                <div className={`flex h-14 w-14 items-center justify-center rounded-xl ${isLive ? "bg-green-500/10" : "bg-muted"}`}>
+                  {isLive
+                    ? <Wifi className="h-7 w-7 text-green-400" />
+                    : <Radio className="h-7 w-7 text-muted-foreground" />}
                 </div>
-                <div>
+                <div className="flex-1">
                   <div className="flex items-center gap-3">
                     <h2 className="text-xl font-bold">
-                      {status.connected ? "Connected" : "Disconnected"}
+                      {isLive ? "Connected" : "Not Connected"}
                     </h2>
                     <div className="flex items-center gap-1.5">
-                      <div
-                        className={`h-2.5 w-2.5 rounded-full ${
-                          status.connected
-                            ? "bg-success animate-pulse"
-                            : "bg-destructive"
-                        }`}
-                      />
+                      <div className={`h-2.5 w-2.5 rounded-full ${isLive ? "bg-green-400 animate-pulse" : "bg-muted-foreground"}`} />
                       <span className="text-xs text-muted-foreground">
-                        {status.connected ? "Live" : "Offline"}
+                        {isLive ? "Live" : "Offline"}
                       </span>
                     </div>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {status.network} network
+                    {isLive
+                      ? `Connected to Bittensor ${status.network} network`
+                      : "No subtensor node reachable — start a local or remote Bittensor node to connect"}
                   </p>
                 </div>
+                {!isLive && (
+                  <Badge variant="secondary" className="shrink-0">Offline</Badge>
+                )}
               </div>
             </CardContent>
           </Card>
 
+          {/* Metric cards */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-            >
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <Network className="h-5 w-5 text-primary" />
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Network
-                      </p>
-                      <p className="text-lg font-semibold capitalize">
-                        {status.network}
-                      </p>
+            {[
+              {
+                label: "Network",
+                value: <span className="capitalize">{status.network}</span>,
+                icon: Network,
+                color: "text-primary",
+                delay: 0.1,
+              },
+              {
+                label: "Net UID",
+                value: status.netuid,
+                icon: Server,
+                color: "text-blue-400",
+                delay: 0.2,
+              },
+              {
+                label: "Block Height",
+                value: isLive ? status.block_height?.toLocaleString() : "N/A",
+                icon: Box,
+                color: isLive ? "text-amber-400" : "text-muted-foreground",
+                delay: 0.3,
+              },
+              {
+                label: "Bittensor Neurons",
+                value: isLive ? status.num_neurons : "N/A",
+                icon: Users,
+                color: isLive ? "text-green-400" : "text-muted-foreground",
+                delay: 0.4,
+              },
+            ].map((card) => (
+              <motion.div
+                key={card.label}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: card.delay }}
+              >
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-3">
+                      <card.icon className={`h-5 w-5 shrink-0 ${card.color}`} />
+                      <div>
+                        <p className="text-xs text-muted-foreground">{card.label}</p>
+                        <p className={`text-lg font-semibold ${card.value === "N/A" ? "text-muted-foreground" : ""}`}>
+                          {card.value}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-            >
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <Server className="h-5 w-5 text-blue-400" />
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Net UID
-                      </p>
-                      <p className="text-lg font-semibold">{status.netuid}</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-            >
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <Box className="h-5 w-5 text-amber-400" />
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Block Height
-                      </p>
-                      <p className="text-lg font-semibold">
-                        {status.block_height?.toLocaleString() ?? "N/A"}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-            >
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <Users className="h-5 w-5 text-green-400" />
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Neurons
-                      </p>
-                      <p className="text-lg font-semibold">
-                        {status.num_neurons ?? "N/A"}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            ))}
           </div>
+
+          {/* Local registrations — always real DB data */}
+          {registeredAgents !== null && (
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center gap-3">
+                  <Shield className="h-5 w-5 text-primary" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">Locally Registered Agents</p>
+                    <p className="text-lg font-semibold">{registeredAgents}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Agents with a confirmed identity hash in the local registry
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </>
       ) : null}
 
       <Separator />
 
+      {/* Subnet capabilities */}
       <div>
         <h2 className="mb-4 text-xl font-semibold">Subnet Capabilities</h2>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -297,9 +269,7 @@ export default function SubnetPage() {
                 <CardContent className="p-6">
                   <feature.icon className="h-8 w-8 text-primary" />
                   <h3 className="mt-3 font-semibold">{feature.title}</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {feature.description}
-                  </p>
+                  <p className="mt-2 text-sm text-muted-foreground">{feature.description}</p>
                 </CardContent>
               </Card>
             </motion.div>
@@ -309,6 +279,7 @@ export default function SubnetPage() {
 
       <Separator />
 
+      {/* Protocol synapses */}
       <div>
         <h2 className="mb-4 text-xl font-semibold">Protocol Synapses</h2>
         <div className="space-y-4">
@@ -326,20 +297,11 @@ export default function SubnetPage() {
                       <Shield className="h-5 w-5 text-primary" />
                     </div>
                     <div className="space-y-2">
-                      <h3 className="font-semibold font-mono text-sm">
-                        {synapse.name}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        {synapse.description}
-                      </p>
+                      <h3 className="font-mono text-sm font-semibold">{synapse.name}</h3>
+                      <p className="text-sm text-muted-foreground">{synapse.description}</p>
                       <div className="flex flex-wrap gap-1.5">
                         {synapse.fields.map((field) => (
-                          <Badge
-                            key={field}
-                            variant="secondary"
-                          >
-                            {field}
-                          </Badge>
+                          <Badge key={field} variant="secondary">{field}</Badge>
                         ))}
                       </div>
                     </div>
