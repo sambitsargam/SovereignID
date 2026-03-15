@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  # ── Backend API ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SOVEREIGNID_DEBUG=true
+      - SOVEREIGNID_DATABASE_URL=sqlite+aiosqlite:///./sovereignid.db
+      - SOVEREIGNID_BITTENSOR_NETWORK=local
+      - SOVEREIGNID_BITTENSOR_NETUID=1
+      - SOVEREIGNID_SUBTENSOR_ENDPOINT=ws://subtensor:9945
+      - SOVEREIGNID_PASSPORT_API_URL=https://api.holonym.io
+      - SOVEREIGNID_PASSPORT_ACTION_ID=123456789
+      - SOVEREIGNID_PASSPORT_NETWORK=optimism
+      - SOVEREIGNID_UNBROWSE_API_URL=https://beta-api.unbrowse.ai
+      - SOVEREIGNID_UNBROWSE_API_KEY=${SOVEREIGNID_UNBROWSE_API_KEY:-}
+      - SOVEREIGNID_CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+      - SOVEREIGNID_JWT_SECRET=${SOVEREIGNID_JWT_SECRET:-sovereignid-dev-secret}
+    volumes:
+      - backend-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Bittensor Local Subtensor (optional) ─────────────────────────────────────
+  # Uncomment to run a local subtensor node for subnet development.
+  # Requires the subtensor Docker image to be built locally.
+  # See: https://docs.learnbittensor.org/local-build/mine-validate
+  #
+  # subtensor:
+  #   image: ghcr.io/opentensor/subtensor:latest
+  #   ports:
+  #     - "9944:9944"
+  #     - "9945:9945"
+  #     - "30333:30333"
+  #   command:
+  #     - "--dev"
+  #     - "--rpc-external"
+  #     - "--rpc-cors=all"
+  #   restart: unless-stopped
+
+volumes:
+  backend-data:

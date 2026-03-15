@@ -6,10 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.schemas import AgentCreatedResponse, AgentResponse, CreateAgentRequest
+from backend.api.schemas import (
+    AgentCreatedResponse,
+    AgentResponse,
+    CreateAgentRequest,
+    SubnetRegistrationResponse,
+)
+from backend.config import settings
 from backend.db import get_session
-from backend.db.models import Agent, HumanIdentity
-from backend.identity.crypto import generate_did, generate_keypair
+from backend.db.models import Agent, HumanIdentity, SubnetRegistration
+from backend.identity.crypto import compute_identity_hash, generate_did, generate_keypair
+from backend.reputation.engine import update_agent_reputation
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -103,3 +110,62 @@ async def get_agents_by_owner(
     )
     agents = agents_result.scalars().all()
     return list(agents)
+
+
+@router.post("/{agent_id}/register", response_model=SubnetRegistrationResponse)
+async def register_on_subnet(
+    agent_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Register an agent's identity on the Bittensor subnet.
+
+    Computes the identity hash and creates a registration record.
+    Awards initial verification reputation.
+    """
+    agent = await session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    existing = await session.execute(
+        select(SubnetRegistration).where(SubnetRegistration.agent_id == agent_id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Agent already registered on subnet")
+
+    owner = await session.get(HumanIdentity, agent.owner_id)
+    identity_hash = compute_identity_hash(agent.id, agent.public_key, owner.wallet_address)
+
+    registration = SubnetRegistration(
+        agent_id=agent.id,
+        netuid=settings.bittensor_netuid,
+        identity_hash=identity_hash,
+        status="verified",
+    )
+    session.add(registration)
+
+    agent.registered_on_subnet = True
+    agent.trust_score = 0.5
+
+    await update_agent_reputation(
+        session, agent.id, "verification", 0.15,
+        "Identity registered on subnet",
+    )
+
+    await session.commit()
+    await session.refresh(registration)
+    return registration
+
+
+@router.get("/{agent_id}/registration", response_model=SubnetRegistrationResponse)
+async def get_registration(
+    agent_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get subnet registration details for an agent."""
+    result = await session.execute(
+        select(SubnetRegistration).where(SubnetRegistration.agent_id == agent_id)
+    )
+    reg = result.scalar_one_or_none()
+    if not reg:
+        raise HTTPException(status_code=404, detail="Agent not registered on subnet")
+    return reg
